@@ -93,7 +93,11 @@ Rebuilds use ad-hoc signing (`signingIdentity: "-"` in `tauri.conf.json`) to red
 | `ci.yml` | PR or push to `main` | Lint, build, security audit |
 | `release.yml` | Push to `main` | Build all desktop installers and publish GitHub Release |
 
-Optional signing secrets for notarized macOS builds: `APPLE_CERTIFICATE`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`.
+Optional signing secrets for **notarized** macOS builds (only add when configured — do not create empty repo secrets):
+
+`APPLE_CERTIFICATE`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`
+
+Without these, CI uses ad-hoc signing (`signingIdentity: "-"` in `tauri.conf.json`).
 
 ## Adding a tool
 

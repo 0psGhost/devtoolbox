@@ -81,12 +81,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Ad-hoc signing is configured in tauri.conf.json (signingIdentity: "-").
+          # Do NOT pass APPLE_* secrets unless you have valid Developer ID credentials.
+          # Empty secrets cause: SecKeychainItemImport / failed to import keychain certificate
         with:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: DevToolbox ${{ needs.prepare.outputs.tag }}
