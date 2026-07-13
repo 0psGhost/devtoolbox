@@ -1,14 +1,79 @@
 # DevToolbox
 
-Free, open-source developer utilities that run entirely in your browser. No servers, no tracking — your data never leaves your machine.
+Free, open-source developer utilities. Runs locally on the web or as a native desktop app — your data never leaves your machine.
+
+**Repository:** [github.com/0psGhost/devtoolbox](https://github.com/0psGhost/devtoolbox)
+
+## Downloads
+
+Desktop installers for **macOS**, **Windows**, and **Linux** are published automatically on every merge to `main`:
+
+**[GitHub Releases](https://github.com/0psGhost/devtoolbox/releases)**
+
+| Platform | Installers |
+|----------|------------|
+| macOS (Apple Silicon) | `.dmg` (aarch64) |
+| macOS (Intel) | `.dmg` (x86_64) |
+| Windows | `.msi`, `.exe` |
+| Linux | `.deb`, `.AppImage`, `.rpm` |
+
+Bump the `version` field in `package.json` before merging when you want a new release tag (e.g. `0.1.0` → `0.1.1`).
+
+## Documentation
+
+Full usage guides for every tool: **[docs/](docs/README.md)**
 
 ## Quick start
+
+### Web app
 
 ```bash
 npm install
 npm run dev      # http://localhost:5173
-npm run build    # production build → dist/
+npm run build    # static build → dist/
 ```
+
+### Desktop app (local build)
+
+**Prerequisites:** [Node.js](https://nodejs.org/) 20+, [Rust](https://rustup.rs/), and platform build tools (see below).
+
+```bash
+npm install
+npm run desktop:dev     # native window with hot reload
+npm run desktop:build   # installer for your OS/architecture
+```
+
+`desktop:build` auto-detects your platform:
+
+| Machine | Build target |
+|---------|--------------|
+| Apple Silicon Mac | `aarch64-apple-darwin` |
+| Intel Mac | `x86_64-apple-darwin` |
+| Windows / Linux | native |
+
+Optional: `npm run desktop:build:mac-universal` for a single macOS DMG (both architectures).
+
+Installers are written to `src-tauri/target/release/bundle/`.
+
+**Platform build dependencies**
+
+| OS | Install |
+|----|---------|
+| **macOS** | `xcode-select --install` |
+| **Windows** | [C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) + WebView2 |
+| **Linux (Ubuntu)** | `sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf` |
+
+### macOS "damaged" / "corrupt" error
+
+Unsigned builds may show a misleading error on other Macs. After installing:
+
+```bash
+xattr -cr /Applications/DevToolbox.app
+```
+
+Then right-click → **Open**, or use **System Settings → Privacy & Security → Open Anyway**.
+
+Rebuilds use ad-hoc signing (`signingIdentity: "-"` in `tauri.conf.json`) to reduce this issue.
 
 ## Tools (22)
 
@@ -21,29 +86,28 @@ npm run build    # production build → dist/
 | **Inspectors** | Certificate Manager, PGP / GPG, JWT Debugger, RegExp Tester |
 | **DevOps & Infra** | Cron Parser, CIDR Calculator, K8s Validator |
 
-### Highlights
+## CI / Release pipeline
 
-- **Certificate Manager** — generate, validate, and inspect X.509 certs, CSRs, and keys
-- **PGP / GPG** — key generation, encrypt/decrypt, sign/verify
-- **K8s Validator** — lint Kubernetes YAML for required fields and best practices
-- **Cron Parser** — human-readable schedules with next run times
-- **CIDR Calculator** — subnet masks, host ranges, IP-in-range checks
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `ci.yml` | PR or push to `main` | Lint, build, security audit |
+| `release.yml` | Push to `main` | Build all desktop installers and publish GitHub Release |
 
-## Features
-
-- Smart paste detection (JWT, PEM certs, PGP keys, K8s YAML, CIDR, cron, etc.)
-- Dark / light / system theme
-- Instant search across all tools
-- Modular tool registry — add a component + one registry entry
+Optional signing secrets for notarized macOS builds: `APPLE_CERTIFICATE`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`.
 
 ## Adding a tool
 
 1. Create `src/tools/<id>/<Component>.tsx`
 2. Register in `src/tools/registry.ts`
+3. Add `docs/tools/<id>.md`
 
 ## Stack
 
-React 19 · TypeScript · Vite · Tailwind CSS 4 · Lucide Icons
+React 19 · TypeScript · Vite · Tailwind CSS 4 · Tauri 2
+
+## Security
+
+See [SECURITY.md](SECURITY.md).
 
 ## License
 

@@ -97,3 +97,42 @@ export async function publicKeysMatch(a: CryptoKey, b: CryptoKey): Promise<boole
   const viewB = new Uint8Array(bufB)
   return viewA.every((v, i) => v === viewB[i])
 }
+
+function bufferToHex(buf: ArrayBuffer, separator = ':'): string {
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, '0').toUpperCase())
+    .join(separator)
+}
+
+/** SHA-256 fingerprint of the SPKI (SubjectPublicKeyInfo) — used to compare cert/CSR/key pairs. */
+export async function getSpkiSha256Fingerprint(key: CryptoKey): Promise<string> {
+  const spki = await crypto.subtle.exportKey('spki', key)
+  const hash = await crypto.subtle.digest('SHA-256', spki)
+  return bufferToHex(hash)
+}
+
+export async function derivePublicKeyFromPrivate(privateKey: CryptoKey): Promise<CryptoKey> {
+  const jwk = await crypto.subtle.exportKey('jwk', privateKey) as JsonWebKey
+  if (jwk.kty === 'RSA') {
+    return crypto.subtle.importKey(
+      'jwk', { kty: 'RSA', n: jwk.n, e: jwk.e },
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, true, ['verify']
+    )
+  }
+  return crypto.subtle.importKey(
+    'jwk', { kty: 'EC', crv: jwk.crv, x: jwk.x, y: jwk.y },
+    { name: 'ECDSA', namedCurve: jwk.crv! }, true, ['verify']
+  )
+}
+
+export async function comparePublicKeys(
+  a: CryptoKey,
+  b: CryptoKey
+): Promise<{ match: boolean; fingerprintA: string; fingerprintB: string }> {
+  const [match, fingerprintA, fingerprintB] = await Promise.all([
+    publicKeysMatch(a, b),
+    getSpkiSha256Fingerprint(a),
+    getSpkiSha256Fingerprint(b),
+  ])
+  return { match, fingerprintA, fingerprintB }
+}

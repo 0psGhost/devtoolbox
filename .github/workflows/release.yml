@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read release version
+        id: meta
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Reset release tag for rebuild
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/${TAG}" 2>/dev/null || true
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            label: macOS (Intel)
+          - platform: ubuntu-22.04
+            args: ''
+            label: Linux
+          - platform: windows-latest
+            args: ''
+            label: Windows
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add macOS cross-compile targets
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish ${{ matrix.label }} installer
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: DevToolbox ${{ needs.prepare.outputs.tag }}
+          releaseBody: |
+            Desktop installers for macOS (Apple Silicon + Intel), Windows, and Linux.
+
+            Built from commit ${{ github.sha }} on `${{ github.ref_name }}`.
+
+            | Platform | Files |
+            |----------|-------|
+            | macOS (Apple Silicon) | `.dmg` (aarch64) |
+            | macOS (Intel) | `.dmg` (x86_64) |
+            | Windows | `.msi`, `.exe` |
+            | Linux | `.deb`, `.AppImage`, `.rpm` |
+
+            See [docs/](https://github.com/${{ github.repository }}/tree/main/docs) for tool usage guides.
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

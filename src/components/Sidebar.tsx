@@ -106,7 +106,7 @@ export function Sidebar({ activeToolId, onSelectTool }: SidebarProps) {
           <ThemeIcon size={16} />
         </button>
         <a
-          href="https://github.com"
+          href="https://github.com/0psGhost/devtoolbox"
           target="_blank"
           rel="noopener noreferrer"
           className="p-1.5 rounded-md text-text-muted hover:text-text-primary hover:bg-surface-raised transition-colors"
