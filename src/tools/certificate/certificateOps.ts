@@ -20,10 +20,12 @@ import {
   importPrivateKey,
   parseSans,
   exportPublicKeyPem,
-  publicKeysMatch,
+  derivePublicKeyFromPrivate,
+  comparePublicKeys,
   type KeyAlgorithm,
 } from './cryptoPem'
 import { extractPemBlocks } from './parseCertificate'
+import { verifyCertificateSignature } from './certSignature'
 
 export interface GenerateSubjectFields {
   cn: string
@@ -165,17 +167,33 @@ export async function validatePem(input: string): Promise<ValidationResult[]> {
       checks: [{ label: 'PEM format', passed: false, detail: 'No valid PEM blocks found' }],
     }]
   }
-  return Promise.all(blocks.map((block) => validateBlock(block.type, block.raw, block.label)))
+
+  const chain = blocks
+    .filter((block) => block.type === 'certificate')
+    .flatMap((block) => {
+      try {
+        return [new X509Certificate(block.raw)]
+      } catch {
+        return []
+      }
+    })
+
+  return Promise.all(blocks.map((block) => validateBlock(block.type, block.raw, block.label, chain)))
 }
 
-async function validateBlock(type: string, raw: string, label: string): Promise<ValidationResult> {
-  if (type === 'certificate') return validateCertificatePem(raw)
+async function validateBlock(
+  type: string,
+  raw: string,
+  label: string,
+  chain: X509Certificate[]
+): Promise<ValidationResult> {
+  if (type === 'certificate') return validateCertificatePem(raw, chain)
   if (type === 'csr') return validateCsrPem(raw)
   if (type === 'private-key') return validatePrivateKeyPem(raw, label)
   return { type: 'unknown', valid: false, checks: [{ label: 'Type', passed: false, detail: `Unsupported PEM type: ${label}` }] }
 }
 
-async function validateCertificatePem(raw: string): Promise<ValidationResult> {
+async function validateCertificatePem(raw: string, chain: X509Certificate[]): Promise<ValidationResult> {
   const checks: ValidationCheck[] = []
   try {
     const cert = new X509Certificate(raw)
@@ -195,12 +213,20 @@ async function validateCertificatePem(raw: string): Promise<ValidationResult> {
       detail: notBefore ? 'Certificate is active' : `Not valid until ${cert.notBefore.toLocaleDateString()}`,
     })
 
-    const sigValid = await cert.verify({ signatureOnly: true }).catch(() => false)
-    checks.push({
-      label: 'Signature',
-      passed: sigValid,
-      detail: sigValid ? 'Cryptographic signature is valid' : 'Signature verification failed',
-    })
+    const signature = await verifyCertificateSignature(cert, chain)
+    if (signature.valid === null) {
+      checks.push({
+        label: 'Signature',
+        passed: true,
+        detail: signature.detail,
+      })
+    } else {
+      checks.push({
+        label: 'Signature',
+        passed: signature.valid,
+        detail: signature.detail,
+      })
+    }
 
     const selfSigned = await cert.isSelfSigned().catch(() => false)
     checks.push({
@@ -209,7 +235,13 @@ async function validateCertificatePem(raw: string): Promise<ValidationResult> {
       detail: selfSigned ? 'Certificate is self-signed' : 'Certificate is not self-signed',
     })
 
-    return { type: 'certificate', valid: checks.filter((c) => c.label !== 'Self-signed').every((c) => c.passed), checks }
+    return {
+      type: 'certificate',
+      valid: checks
+        .filter((c) => c.label !== 'Self-signed' && !(c.label === 'Signature' && signature.valid === null))
+        .every((c) => c.passed),
+      checks,
+    }
   } catch (e) {
     return {
       type: 'certificate',
@@ -267,14 +299,16 @@ export async function validateKeyPairMatch(certificatePem: string, privateKeyPem
     const privateKey = await importPrivateKey(privateKeyPem)
     const certPubKey = await cert.publicKey.export()
     const pubKeyFromPrivate = await derivePublicKeyFromPrivate(privateKey)
-    const match = await publicKeysMatch(certPubKey, pubKeyFromPrivate)
+    const { match, fingerprintA, fingerprintB } = await comparePublicKeys(certPubKey, pubKeyFromPrivate)
     checks.push({
-      label: 'Key pair match',
+      label: 'Certificate ↔ Private Key',
       passed: match,
-      detail: match ? 'Private key matches certificate public key' : 'Private key does NOT match certificate',
+      detail: match
+        ? `Public key fingerprints match (SHA-256 SPKI: ${fingerprintA})`
+        : `Fingerprints differ — cert: ${fingerprintA}, key: ${fingerprintB}`,
     })
   } catch (e) {
-    checks.push({ label: 'Key pair match', passed: false, detail: (e as Error).message })
+    checks.push({ label: 'Certificate ↔ Private Key', passed: false, detail: (e as Error).message })
   }
   return checks
 }
@@ -286,28 +320,97 @@ export async function validateCsrKeyMatch(csrPem: string, privateKeyPem: string)
     const privateKey = await importPrivateKey(privateKeyPem)
     const csrPubKey = await csr.publicKey.export()
     const pubKeyFromPrivate = await derivePublicKeyFromPrivate(privateKey)
-    const match = await publicKeysMatch(csrPubKey, pubKeyFromPrivate)
+    const { match, fingerprintA, fingerprintB } = await comparePublicKeys(csrPubKey, pubKeyFromPrivate)
     checks.push({
-      label: 'CSR key match',
+      label: 'CSR ↔ Private Key',
       passed: match,
-      detail: match ? 'Private key matches CSR public key' : 'Private key does NOT match CSR',
+      detail: match
+        ? `Public key fingerprints match (SHA-256 SPKI: ${fingerprintA})`
+        : `Fingerprints differ — CSR: ${fingerprintA}, key: ${fingerprintB}`,
     })
   } catch (e) {
-    checks.push({ label: 'CSR key match', passed: false, detail: (e as Error).message })
+    checks.push({ label: 'CSR ↔ Private Key', passed: false, detail: (e as Error).message })
   }
   return checks
 }
 
-async function derivePublicKeyFromPrivate(privateKey: CryptoKey): Promise<CryptoKey> {
-  const jwk = await crypto.subtle.exportKey('jwk', privateKey) as JsonWebKey
-  if (jwk.kty === 'RSA') {
-    return crypto.subtle.importKey(
-      'jwk', { kty: 'RSA', n: jwk.n, e: jwk.e },
-      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, true, ['verify']
+export async function validateCertCsrMatch(certificatePem: string, csrPem: string): Promise<ValidationCheck[]> {
+  const checks: ValidationCheck[] = []
+  try {
+    const cert = new X509Certificate(certificatePem)
+    const csr = new Pkcs10CertificateRequest(csrPem)
+    const certPubKey = await cert.publicKey.export()
+    const csrPubKey = await csr.publicKey.export()
+    const { match, fingerprintA, fingerprintB } = await comparePublicKeys(certPubKey, csrPubKey)
+    checks.push({
+      label: 'Certificate ↔ CSR',
+      passed: match,
+      detail: match
+        ? `Public key fingerprints match (SHA-256 SPKI: ${fingerprintA})`
+        : `Fingerprints differ — cert: ${fingerprintA}, CSR: ${fingerprintB}`,
+    })
+  } catch (e) {
+    checks.push({ label: 'Certificate ↔ CSR', passed: false, detail: (e as Error).message })
+  }
+  return checks
+}
+
+/** Validate public-key relationships between cert, CSR, and private key found in input. */
+export async function validateKeyRelationships(
+  input: string,
+  additionalPrivateKey?: string
+): Promise<ValidationCheck[]> {
+  const blocks = extractPemBlocks(input)
+  const certBlocks = blocks.filter((b) => b.type === 'certificate')
+  const csrBlocks = blocks.filter((b) => b.type === 'csr')
+  const keyBlock = blocks.find((b) => b.type === 'private-key')
+  const privateKeyPem = additionalPrivateKey?.trim() || keyBlock?.raw
+
+  const checks: ValidationCheck[] = []
+  const hasCertOrCsr = certBlocks.length > 0 || csrBlocks.length > 0
+
+  if (!privateKeyPem && hasCertOrCsr) {
+    checks.push({
+      label: 'Private key',
+      passed: false,
+      detail: 'No private key found — paste it with the certificate/CSR or in the key field',
+    })
+    return checks
+  }
+
+  if (!privateKeyPem) return checks
+
+  for (let i = 0; i < certBlocks.length; i++) {
+    const pairChecks = await validateKeyPairMatch(certBlocks[i].raw, privateKeyPem)
+    checks.push(
+      ...pairChecks.map((c) => ({
+        ...c,
+        label: certBlocks.length > 1 ? `Certificate #${i + 1} ↔ Private Key` : c.label,
+      }))
     )
   }
-  return crypto.subtle.importKey(
-    'jwk', { kty: 'EC', crv: jwk.crv, x: jwk.x, y: jwk.y },
-    { name: 'ECDSA', namedCurve: jwk.crv! }, true, ['verify']
-  )
+
+  for (let i = 0; i < csrBlocks.length; i++) {
+    const pairChecks = await validateCsrKeyMatch(csrBlocks[i].raw, privateKeyPem)
+    checks.push(
+      ...pairChecks.map((c) => ({
+        ...c,
+        label: csrBlocks.length > 1 ? `CSR #${i + 1} ↔ Private Key` : c.label,
+      }))
+    )
+  }
+
+  if (certBlocks.length > 0 && csrBlocks.length > 0) {
+    checks.push(...await validateCertCsrMatch(certBlocks[0].raw, csrBlocks[0].raw))
+  }
+
+  if (checks.length === 0 && privateKeyPem && !hasCertOrCsr) {
+    checks.push({
+      label: 'Key pair match',
+      passed: false,
+      detail: 'Private key provided but no certificate or CSR to compare against',
+    })
+  }
+
+  return checks
 }

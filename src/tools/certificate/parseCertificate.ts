@@ -8,6 +8,7 @@ import {
   TextConverter,
 } from '@peculiar/x509'
 import { importPrivateKey } from './cryptoPem'
+import { verifyCertificateSignature } from './certSignature'
 
 export type PemBlockType = 'certificate' | 'csr' | 'private-key' | 'unknown'
 
@@ -123,16 +124,16 @@ function getSubjectAltNames(cert: X509Certificate): string[] {
   return ext.names.items.map((n) => String(n))
 }
 
-async function parseCertificate(raw: string, index: number): Promise<CertificateInfo> {
+async function parseCertificate(raw: string, index: number, chain: X509Certificate[]): Promise<CertificateInfo> {
   const cert = new X509Certificate(raw)
   const basicConstraints = cert.getExtension(BasicConstraintsExtension)
   const eku = cert.getExtension(ExtendedKeyUsageExtension)
 
-  const [sha1, sha256, selfSigned, valid] = await Promise.all([
+  const [sha1, sha256, selfSigned, signature] = await Promise.all([
     cert.getThumbprint({ name: 'SHA-1' }).then(bufferToHex),
     cert.getThumbprint({ name: 'SHA-256' }).then(bufferToHex),
     cert.isSelfSigned().catch(() => false),
-    cert.verify().catch(() => null),
+    verifyCertificateSignature(cert, chain),
   ])
 
   const daysRemaining = Math.ceil(
@@ -167,7 +168,7 @@ async function parseCertificate(raw: string, index: number): Promise<Certificate
     sha1Fingerprint: sha1,
     sha256Fingerprint: sha256,
     isSelfSigned: selfSigned,
-    signatureValid: valid,
+    signatureValid: signature.valid,
     extensions: cert.extensions.map((e) => ({
       name: e.type,
       critical: e.critical,
@@ -242,19 +243,30 @@ export async function parsePemInput(input: string): Promise<{ items: ParsedItem[
     if (blocks.length === 0) {
       // Try parsing as a single DER/base64 cert without PEM headers
       try {
-        const cert = await parseCertificate(trimmed, 0)
-        return { items: [cert], error: null }
+        const cert = new X509Certificate(trimmed)
+        const parsed = await parseCertificate(trimmed, 0, [cert])
+        return { items: [parsed], error: null }
       } catch {
         return { items: [], error: 'No valid PEM blocks found. Paste a certificate, CSR, or chain.' }
       }
     }
+
+    const chain = blocks
+      .filter((block) => block.type === 'certificate')
+      .flatMap((block) => {
+        try {
+          return [new X509Certificate(block.raw)]
+        } catch {
+          return []
+        }
+      })
 
     const items: ParsedItem[] = []
     for (let i = 0; i < blocks.length; i++) {
       const block = blocks[i]
       switch (block.type) {
         case 'certificate':
-          items.push(await parseCertificate(block.raw, i))
+          items.push(await parseCertificate(block.raw, i, chain))
           break
         case 'csr':
           items.push(await parseCsr(block.raw, i))

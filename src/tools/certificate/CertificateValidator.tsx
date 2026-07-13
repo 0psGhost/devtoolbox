@@ -3,8 +3,7 @@ import { CheckCircle, XCircle } from 'lucide-react'
 import { TextArea, Button } from '../../components/ui'
 import {
   validatePem,
-  validateKeyPairMatch,
-  validateCsrKeyMatch,
+  validateKeyRelationships,
   type ValidationResult,
   type ValidationCheck,
 } from './certificateOps'
@@ -66,26 +65,7 @@ export default function CertificateValidator() {
     try {
       const pemResults = await validatePem(input)
       setResults(pemResults)
-
-      const matchResults: ValidationCheck[] = []
-      if (privateKey.trim()) {
-        const certBlock = input.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/)
-        const csrBlock = input.match(/-----BEGIN CERTIFICATE REQUEST-----[\s\S]*?-----END CERTIFICATE REQUEST-----/)
-        if (certBlock) {
-          matchResults.push(...await validateKeyPairMatch(certBlock[0], privateKey))
-        }
-        if (csrBlock) {
-          matchResults.push(...await validateCsrKeyMatch(csrBlock[0], privateKey))
-        }
-        if (!certBlock && !csrBlock) {
-          matchResults.push({
-            label: 'Key pair match',
-            passed: false,
-            detail: 'No certificate or CSR found in input to match against private key',
-          })
-        }
-      }
-      setMatchChecks(matchResults)
+      setMatchChecks(await validateKeyRelationships(input, privateKey.trim() || undefined))
     } finally {
       setLoading(false)
     }
@@ -97,11 +77,11 @@ export default function CertificateValidator() {
         label="Certificate / CSR / Key PEM"
         value={input}
         onChange={setInput}
-        placeholder="Paste PEM data to validate..."
+        placeholder="Paste certificate, CSR, and/or private key PEM blocks..."
         rows={8}
       />
       <TextArea
-        label="Private Key (optional — for key pair matching)"
+        label="Private Key (optional if already included above)"
         value={privateKey}
         onChange={setPrivateKey}
         placeholder="-----BEGIN PRIVATE KEY-----..."
@@ -121,7 +101,10 @@ export default function CertificateValidator() {
 
       {matchChecks.length > 0 && (
         <div className="rounded-lg border border-border bg-surface-raised p-4">
-          <h3 className="text-sm font-medium text-text-primary mb-3">Key Pair Matching</h3>
+          <h3 className="text-sm font-medium text-text-primary mb-1">Public Key Matching</h3>
+          <p className="text-xs text-text-muted mb-3">
+            Compares SHA-256 fingerprints of each public key (SPKI) to verify cert, CSR, and private key belong together.
+          </p>
           <div className="divide-y divide-border">
             {matchChecks.map((check) => (
               <CheckRow key={check.label} check={check} />
